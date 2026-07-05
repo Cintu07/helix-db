@@ -128,7 +128,7 @@ fn init_and_add_generate_expected_project_files() {
 
 #[test]
 fn local_runtime_commands_have_cross_platform_no_daemon_smoke_coverage() {
-    let fixture = CliFixture::new();
+    let fixture = CliFixture::new_with_fake_runtime();
     let project = fixture.root().join("local-command-project");
 
     fixture
