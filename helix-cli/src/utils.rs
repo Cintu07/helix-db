@@ -173,9 +173,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn command_exists_in_path_finds_unix_executable() {
+    fn command_exists_in_path_finds_platform_executable() {
         let dir = tempfile::tempdir().unwrap();
-        let command = dir.path().join("node");
+        let command = dir
+            .path()
+            .join(if cfg!(windows) { "node.CMD" } else { "node" });
         std::fs::write(&command, "").unwrap();
 
         #[cfg(unix)]
@@ -189,7 +191,7 @@ mod tests {
         assert!(command_exists_in_path(
             "node",
             Some(dir.path().as_os_str().to_os_string()),
-            None,
+            Some(OsString::from(".CMD")),
         ));
     }
 

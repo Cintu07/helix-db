@@ -10,6 +10,7 @@ pub struct CliFixture {
     home: PathBuf,
     helix_home: PathBuf,
     cache: PathBuf,
+    bin: PathBuf,
 }
 
 impl CliFixture {
@@ -22,9 +23,11 @@ impl CliFixture {
         let home = root_path.join("home");
         let helix_home = root_path.join("helix-home");
         let cache = root_path.join("helix-cache");
+        let bin = root_path.join("bin");
         fs::create_dir_all(&home).expect("create isolated home");
         fs::create_dir_all(&helix_home).expect("create isolated helix home");
         fs::create_dir_all(&cache).expect("create isolated cache");
+        install_fake_docker(&bin);
 
         let tempdir = if std::env::var_os("HELIX_E2E_KEEP_TMP").is_some() {
             std::mem::forget(root);
@@ -39,6 +42,7 @@ impl CliFixture {
             home,
             helix_home,
             cache,
+            bin,
         }
     }
 
@@ -48,6 +52,7 @@ impl CliFixture {
 
     pub fn command(&self) -> Command {
         let mut command = Command::cargo_bin("helix").expect("helix binary should be built");
+        let path = prepend_path(&self.bin);
         command
             .env("HELIX_NO_UPDATE_CHECK", "1")
             .env("HELIX_DISABLE_UPDATE_CHECK", "1")
@@ -56,8 +61,76 @@ impl CliFixture {
             .env("HELIX_CACHE_DIR", &self.cache)
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
+            .env("PATH", path)
+            .env("PATHEXT", ".COM;.EXE;.BAT;.CMD")
             .env("CLICOLOR", "0");
         command
+    }
+}
+
+fn prepend_path(bin: &Path) -> std::ffi::OsString {
+    let mut paths = vec![bin.to_path_buf()];
+    if let Some(path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&path));
+    }
+    std::env::join_paths(paths).expect("join PATH")
+}
+
+fn install_fake_docker(bin: &Path) {
+    fs::create_dir_all(bin).expect("create fake docker bin");
+
+    #[cfg(windows)]
+    {
+        let script = bin.join("docker.cmd");
+        fs::write(
+            &script,
+            r#"@echo off
+if "%1"=="info" exit /b 0
+if "%1"=="ps" exit /b 0
+if "%1"=="logs" (
+  echo fake logs
+  exit /b 0
+)
+if "%1"=="rm" (
+  echo No such container 1>&2
+  exit /b 1
+)
+if "%1"=="network" (
+  echo not found 1>&2
+  exit /b 1
+)
+if "%1"=="volume" (
+  echo not found 1>&2
+  exit /b 1
+)
+exit /b 0
+"#,
+        )
+        .expect("write fake docker cmd");
+    }
+
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = bin.join("docker");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+case "$1" in
+  info) exit 0 ;;
+  ps) exit 0 ;;
+  logs) echo "fake logs"; exit 0 ;;
+  rm) echo "No such container" >&2; exit 1 ;;
+  network|volume) echo "not found" >&2; exit 1 ;;
+  *) exit 0 ;;
+esac
+"#,
+        )
+        .expect("write fake docker script");
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script, permissions).unwrap();
     }
 }
 
