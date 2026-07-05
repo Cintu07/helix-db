@@ -1,14 +1,78 @@
 use crate::errors::CliError;
 use color_eyre::owo_colors::OwoColorize;
 use eyre::Result;
+use std::ffi::OsString;
 use std::io::IsTerminal;
+use std::path::Path;
 
 pub fn command_exists(command: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(command)
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    command_exists_in_path(
+        command,
+        std::env::var_os("PATH"),
+        std::env::var_os("PATHEXT"),
+    )
+}
+
+fn command_exists_in_path(
+    command: &str,
+    path: Option<OsString>,
+    path_ext: Option<OsString>,
+) -> bool {
+    let command_path = Path::new(command);
+    if command_path.components().count() > 1 {
+        return is_executable(command_path);
+    }
+
+    let Some(path) = path else {
+        return false;
+    };
+
+    let extensions = command_extensions(command, path_ext);
+    std::env::split_paths(&path).any(|dir| {
+        extensions
+            .iter()
+            .any(|extension| is_executable(&dir.join(format!("{command}{extension}"))))
+    })
+}
+
+fn command_extensions(command: &str, path_ext: Option<OsString>) -> Vec<String> {
+    if cfg!(windows) && Path::new(command).extension().is_none() {
+        let path_ext = path_ext
+            .and_then(|value| value.into_string().ok())
+            .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
+        let mut extensions = vec![String::new()];
+        extensions.extend(
+            path_ext
+                .split(';')
+                .filter(|extension| !extension.is_empty())
+                .map(|extension| {
+                    if extension.starts_with('.') {
+                        extension.to_string()
+                    } else {
+                        format!(".{extension}")
+                    }
+                }),
+        );
+        extensions
+    } else {
+        vec![String::new()]
+    }
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    path.is_file()
+        && path
+            .metadata()
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
 }
 
 pub fn print_newline() {
@@ -102,4 +166,43 @@ pub fn add_env_var_to_file(path: &std::path::Path, key: &str, value: &str) -> Re
 
     std::fs::write(path, content)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_exists_in_path_finds_platform_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let command = dir
+            .path()
+            .join(if cfg!(windows) { "node.CMD" } else { "node" });
+        std::fs::write(&command, "").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&command).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&command, permissions).unwrap();
+        }
+
+        assert!(command_exists_in_path(
+            "node",
+            Some(dir.path().as_os_str().to_os_string()),
+            Some(OsString::from(".CMD")),
+        ));
+    }
+
+    #[test]
+    fn command_extensions_include_windows_path_ext() {
+        let extensions = command_extensions("node", Some(OsString::from(".EXE;.CMD")));
+
+        if cfg!(windows) {
+            assert_eq!(extensions, vec!["", ".EXE", ".CMD"]);
+        } else {
+            assert_eq!(extensions, vec![""]);
+        }
+    }
 }

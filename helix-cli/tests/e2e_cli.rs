@@ -127,6 +127,110 @@ fn init_and_add_generate_expected_project_files() {
 }
 
 #[test]
+fn local_runtime_commands_have_cross_platform_no_daemon_smoke_coverage() {
+    let fixture = CliFixture::new_with_fake_runtime();
+    let project = fixture.root().join("local-command-project");
+
+    fixture
+        .command()
+        .args(["init", "--path"])
+        .arg(&project)
+        .args(["local", "--no-skills"])
+        .assert()
+        .success();
+
+    let status = stdout(
+        fixture
+            .command()
+            .current_dir(&project)
+            .args(["status", "dev"])
+            .assert()
+            .success(),
+    );
+    assert!(status.contains("dev (local)"));
+    assert!(status.contains("not created"));
+
+    let logs = stdout(
+        fixture
+            .command()
+            .current_dir(&project)
+            .args(["logs", "dev"])
+            .assert()
+            .success(),
+    );
+    assert!(logs.contains("fake logs"));
+
+    let stop = stdout(
+        fixture
+            .command()
+            .current_dir(&project)
+            .args(["stop", "dev"])
+            .assert()
+            .success(),
+    );
+    assert!(stop.contains("was not running"));
+
+    let prune = stdout(
+        fixture
+            .command()
+            .current_dir(&project)
+            .args(["prune", "dev"])
+            .assert()
+            .success(),
+    );
+    assert!(prune.contains("No local runtime resources found"));
+
+    let mut config_text = fs::read_to_string(project.join("helix.toml")).unwrap();
+    config_text.push_str(
+        r#"
+
+[enterprise.production]
+cluster_id = "cluster-test"
+gateway_url = "http://127.0.0.1:9999"
+"#,
+    );
+    fs::write(project.join("helix.toml"), config_text).unwrap();
+
+    let start_cloud = stderr(
+        fixture
+            .command()
+            .current_dir(&project)
+            .args(["start", "production"])
+            .assert()
+            .failure(),
+    );
+    assert!(start_cloud.contains("'production' is not a local v2 instance"));
+
+    let restart_cloud = stderr(
+        fixture
+            .command()
+            .current_dir(&project)
+            .args(["restart", "production"])
+            .assert()
+            .failure(),
+    );
+    assert!(restart_cloud.contains("'production' is not a local v2 instance"));
+
+    fixture
+        .command()
+        .current_dir(&project)
+        .args(["delete", "dev", "--yes"])
+        .assert()
+        .success();
+
+    let config_text = fs::read_to_string(project.join("helix.toml")).unwrap();
+    let config: TomlValue = toml::from_str(&config_text).unwrap();
+    assert!(
+        config
+            .get("local")
+            .and_then(TomlValue::as_table)
+            .map(|local| local.is_empty())
+            .unwrap_or(true)
+    );
+    assert!(config["enterprise"]["production"].is_table());
+}
+
+#[test]
 fn project_and_metrics_commands_use_isolated_state() {
     let fixture = CliFixture::new();
     let project = fixture.root().join("state-project");

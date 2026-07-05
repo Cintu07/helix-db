@@ -10,10 +10,20 @@ pub struct CliFixture {
     home: PathBuf,
     helix_home: PathBuf,
     cache: PathBuf,
+    test_runtime_bin: Option<PathBuf>,
 }
 
 impl CliFixture {
     pub fn new() -> Self {
+        Self::new_inner(false)
+    }
+
+    #[allow(dead_code)]
+    pub fn new_with_fake_runtime() -> Self {
+        Self::new_inner(true)
+    }
+
+    fn new_inner(fake_runtime: bool) -> Self {
         let root = Builder::new()
             .prefix("helix-cli-e2e-")
             .tempdir()
@@ -25,6 +35,7 @@ impl CliFixture {
         fs::create_dir_all(&home).expect("create isolated home");
         fs::create_dir_all(&helix_home).expect("create isolated helix home");
         fs::create_dir_all(&cache).expect("create isolated cache");
+        let test_runtime_bin = fake_runtime.then(|| install_fake_docker(&root_path.join("bin")));
 
         let tempdir = if std::env::var_os("HELIX_E2E_KEEP_TMP").is_some() {
             std::mem::forget(root);
@@ -39,6 +50,7 @@ impl CliFixture {
             home,
             helix_home,
             cache,
+            test_runtime_bin,
         }
     }
 
@@ -56,8 +68,72 @@ impl CliFixture {
             .env("HELIX_CACHE_DIR", &self.cache)
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
+            .env("PATHEXT", ".COM;.EXE;.BAT;.CMD")
             .env("CLICOLOR", "0");
+        if let Some(test_runtime_bin) = &self.test_runtime_bin {
+            command.env("HELIX_TEST_CONTAINER_RUNTIME_BIN", test_runtime_bin);
+        }
         command
+    }
+}
+
+fn install_fake_docker(bin: &Path) -> PathBuf {
+    fs::create_dir_all(bin).expect("create fake docker bin");
+
+    #[cfg(windows)]
+    {
+        let script = bin.join("docker.cmd");
+        fs::write(
+            &script,
+            r#"@echo off
+if "%1"=="info" exit /b 0
+if "%1"=="ps" exit /b 0
+if "%1"=="logs" (
+  echo fake logs
+  exit /b 0
+)
+if "%1"=="rm" (
+  echo No such container 1>&2
+  exit /b 1
+)
+if "%1"=="network" (
+  echo not found 1>&2
+  exit /b 1
+)
+if "%1"=="volume" (
+  echo not found 1>&2
+  exit /b 1
+)
+exit /b 0
+"#,
+        )
+        .expect("write fake docker cmd");
+        script
+    }
+
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = bin.join("docker");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+case "$1" in
+  info) exit 0 ;;
+  ps) exit 0 ;;
+  logs) echo "fake logs"; exit 0 ;;
+  rm) echo "No such container" >&2; exit 1 ;;
+  network|volume) echo "not found" >&2; exit 1 ;;
+  *) exit 0 ;;
+esac
+"#,
+        )
+        .expect("write fake docker script");
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script, permissions).unwrap();
+        script
     }
 }
 

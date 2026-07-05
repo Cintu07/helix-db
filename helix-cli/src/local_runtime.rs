@@ -4,6 +4,7 @@ use crate::output::Step;
 use crate::project::ProjectContext;
 use crate::utils::command_exists;
 use eyre::{Result, eyre};
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::{Command, Output, Stdio};
@@ -24,6 +25,7 @@ const MINIO_SECRET_KEY: &str = "minioadmin";
 const LOCAL_S3_BUCKET: &str = "helix-db";
 const LOCAL_S3_REGION: &str = "us-east-1";
 const LOCAL_DB_PATH: &str = "db/";
+const TEST_CONTAINER_RUNTIME_BIN_ENV: &str = "HELIX_TEST_CONTAINER_RUNTIME_BIN";
 
 #[derive(Debug, Clone)]
 pub struct LocalRuntime {
@@ -55,7 +57,7 @@ impl LocalRuntime {
     }
 
     pub fn check_available(runtime: ContainerRuntime) -> Result<()> {
-        let output = match Command::new(runtime.binary()).arg("info").output() {
+        let output = match runtime_command(runtime).arg("info").output() {
             Ok(output) => output,
             // The binary itself couldn't be spawned — the runtime isn't installed,
             // so there's nothing for us to auto-start.
@@ -90,7 +92,7 @@ impl LocalRuntime {
     /// Returns `true` if the runtime daemon answers an `info` probe. This is a
     /// quick, non-blocking check — it never tries to auto-start the daemon.
     pub(crate) fn is_running(runtime: ContainerRuntime) -> bool {
-        Command::new(runtime.binary())
+        runtime_command(runtime)
             .arg("info")
             .output()
             .map(|o| o.status.success())
@@ -170,7 +172,8 @@ impl LocalRuntime {
 
     fn pull_image_ref(&self, image: &str) -> Result<()> {
         Step::verbose_substep(&format!("Pulling {image}"));
-        let output = Command::new(self.runtime.binary())
+        let output = self
+            .runtime_command()
             .args(["pull", image])
             .output()
             .map_err(|e| eyre!("Failed to pull {image}: {e}"))?;
@@ -188,7 +191,7 @@ impl LocalRuntime {
     }
 
     fn image_exists(&self, image: &str) -> bool {
-        Command::new(self.runtime.binary())
+        self.runtime_command()
             .args(["image", "inspect", image])
             .output()
             .map(|output| output.status.success())
@@ -210,7 +213,8 @@ impl LocalRuntime {
         };
 
         let args = helix_run_args(&name, &image, config.port, true, disk_resources.as_ref());
-        let output = Command::new(self.runtime.binary())
+        let output = self
+            .runtime_command()
             .args(&args)
             .output()
             .map_err(|e| eyre!("Failed to start {name}: {e}"))?;
@@ -243,7 +247,8 @@ impl LocalRuntime {
         };
         let args = helix_run_args(&name, &image, config.port, false, disk_resources.as_ref());
 
-        let mut child = TokioCommand::new(self.runtime.binary())
+        let mut child = self
+            .runtime_tokio_command()
             .args(&args)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -297,7 +302,8 @@ impl LocalRuntime {
         }
 
         let name = self.container_name(instance_name);
-        let output = Command::new(self.runtime.binary())
+        let output = self
+            .runtime_command()
             .args(["restart", &name])
             .output()
             .map_err(|e| eyre!("Failed to restart {name}: {e}"))?;
@@ -312,7 +318,7 @@ impl LocalRuntime {
 
     pub fn logs(&self, instance_name: &str, follow: bool) -> Result<()> {
         let name = self.container_name(instance_name);
-        let mut command = Command::new(self.runtime.binary());
+        let mut command = self.runtime_command();
         command.arg("logs");
         if follow {
             command.arg("-f");
@@ -336,7 +342,8 @@ impl LocalRuntime {
 
     pub fn status(&self, instance_name: &str) -> Result<Option<LocalStatus>> {
         let name = self.container_name(instance_name);
-        let output = Command::new(self.runtime.binary())
+        let output = self
+            .runtime_command()
             .args([
                 "ps",
                 "-a",
@@ -378,16 +385,13 @@ impl LocalRuntime {
     }
 
     pub fn run_command(&self, args: &[&str]) -> Result<Output> {
-        Command::new(self.runtime.binary())
-            .args(args)
-            .output()
-            .map_err(|e| {
-                eyre!(
-                    "Failed to run {} {}: {e}",
-                    self.runtime.binary(),
-                    args.join(" ")
-                )
-            })
+        self.runtime_command().args(args).output().map_err(|e| {
+            eyre!(
+                "Failed to run {} {}: {e}",
+                self.runtime.binary(),
+                args.join(" ")
+            )
+        })
     }
 
     fn disk_resources(&self, instance_name: &str) -> DiskRuntimeResources {
@@ -408,7 +412,8 @@ impl LocalRuntime {
         let _ = self.remove_container(&resources.minio_container);
 
         let args = minio_run_args(&resources);
-        let output = Command::new(self.runtime.binary())
+        let output = self
+            .runtime_command()
             .args(&args)
             .output()
             .map_err(|e| eyre!("Failed to start {}: {e}", resources.minio_container))?;
@@ -430,7 +435,8 @@ impl LocalRuntime {
             return Ok(());
         }
 
-        let output = Command::new(self.runtime.binary())
+        let output = self
+            .runtime_command()
             .args(["network", "create", network])
             .output()
             .map_err(|e| eyre!("Failed to create network {network}: {e}"))?;
@@ -446,7 +452,8 @@ impl LocalRuntime {
     }
 
     fn ensure_volume(&self, volume: &str) -> Result<()> {
-        let output = Command::new(self.runtime.binary())
+        let output = self
+            .runtime_command()
             .args(["volume", "create", volume])
             .output()
             .map_err(|e| eyre!("Failed to create volume {volume}: {e}"))?;
@@ -465,7 +472,8 @@ impl LocalRuntime {
         let mut last_stderr = String::new();
 
         while Instant::now() < deadline {
-            let output = Command::new(self.runtime.binary())
+            let output = self
+                .runtime_command()
                 .args(&args)
                 .output()
                 .map_err(|e| eyre!("Failed to initialize local MinIO bucket: {e}"))?;
@@ -497,7 +505,8 @@ impl LocalRuntime {
     }
 
     fn remove_network(&self, network: &str) -> Result<bool> {
-        let output = Command::new(self.runtime.binary())
+        let output = self
+            .runtime_command()
             .args(["network", "rm", network])
             .output()
             .map_err(|e| eyre!("Failed to remove network {network}: {e}"))?;
@@ -514,7 +523,8 @@ impl LocalRuntime {
     }
 
     fn remove_volume(&self, volume: &str) -> Result<bool> {
-        let output = Command::new(self.runtime.binary())
+        let output = self
+            .runtime_command()
             .args(["volume", "rm", volume])
             .output()
             .map_err(|e| eyre!("Failed to remove volume {volume}: {e}"))?;
@@ -531,7 +541,7 @@ impl LocalRuntime {
     }
 
     fn resource_exists(&self, args: &[&str]) -> bool {
-        Command::new(self.runtime.binary())
+        self.runtime_command()
             .args(args)
             .output()
             .map(|output| output.status.success())
@@ -539,7 +549,8 @@ impl LocalRuntime {
     }
 
     fn remove_container(&self, name: &str) -> Result<bool> {
-        let output = Command::new(self.runtime.binary())
+        let output = self
+            .runtime_command()
             .args(["rm", "-f", name])
             .output()
             .map_err(|e| eyre!("Failed to remove {name}: {e}"))?;
@@ -598,6 +609,52 @@ impl LocalRuntime {
 
         response.starts_with("HTTP/1.1 2") || response.starts_with("HTTP/1.0 2")
     }
+
+    fn runtime_command(&self) -> Command {
+        runtime_command(self.runtime)
+    }
+
+    fn runtime_tokio_command(&self) -> TokioCommand {
+        runtime_tokio_command(self.runtime)
+    }
+}
+
+fn runtime_command(runtime: ContainerRuntime) -> Command {
+    match std::env::var_os(TEST_CONTAINER_RUNTIME_BIN_ENV) {
+        Some(bin) => command_from_test_runtime_bin(bin),
+        None => Command::new(runtime.binary()),
+    }
+}
+
+fn runtime_tokio_command(runtime: ContainerRuntime) -> TokioCommand {
+    match std::env::var_os(TEST_CONTAINER_RUNTIME_BIN_ENV) {
+        Some(bin) => tokio_command_from_test_runtime_bin(bin),
+        None => TokioCommand::new(runtime.binary()),
+    }
+}
+
+#[cfg(windows)]
+fn command_from_test_runtime_bin(bin: OsString) -> Command {
+    let mut command = Command::new("cmd");
+    command.arg("/C").arg("call").arg(bin);
+    command
+}
+
+#[cfg(not(windows))]
+fn command_from_test_runtime_bin(bin: OsString) -> Command {
+    Command::new(bin)
+}
+
+#[cfg(windows)]
+fn tokio_command_from_test_runtime_bin(bin: OsString) -> TokioCommand {
+    let mut command = TokioCommand::new("cmd");
+    command.arg("/C").arg("call").arg(bin);
+    command
+}
+
+#[cfg(not(windows))]
+fn tokio_command_from_test_runtime_bin(bin: OsString) -> TokioCommand {
+    TokioCommand::new(bin)
 }
 
 /// Build the error for a container runtime whose binary is missing from PATH.
