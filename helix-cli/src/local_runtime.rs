@@ -460,7 +460,12 @@ impl LocalRuntime {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(eyre!("Failed to create volume {volume}:\n{stderr}"));
+            // podman errors when the volume already exists, docker does not.
+            // an existing volume is the expected case on restart, so treat it
+            // the same way ensure_network does.
+            if !stderr.to_ascii_lowercase().contains("already exists") {
+                return Err(eyre!("Failed to create volume {volume}:\n{stderr}"));
+            }
         }
 
         Ok(())
