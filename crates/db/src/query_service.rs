@@ -270,7 +270,7 @@ fn query_error_type(error: &QueryServiceError) -> query::QueryErrorType {
         QueryServiceError::Db(error) if error.is_transaction_conflict() => {
             query::QueryErrorType::Conflict
         }
-        QueryServiceError::Db(error) if error.is_invalid_vector_input() => {
+        QueryServiceError::Db(error) if error.is_invalid_input() => {
             query::QueryErrorType::InvalidRequest
         }
         QueryServiceError::Db(_) => query::QueryErrorType::Execution,
@@ -682,6 +682,9 @@ impl QueryResponse {
         }
     }
 }
+
+#[cfg(test)]
+mod selective_equality_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2277,6 +2280,21 @@ mod tests {
             HelixDbError::from(QueryServiceError::Serialize(sonic)),
             HelixDbError::Query(_)
         ));
+    }
+
+    #[test]
+    fn active_text_limit_telemetry_is_invalid_request() {
+        let error = QueryServiceError::Db(HelixDbError::ActiveTextMutationLimitExceeded {
+            resource: crate::error::ActiveTextMutationResource::Entities,
+            observed: 513,
+            limit: 512,
+        });
+        assert_eq!(
+            query_error_type(&error),
+            query::QueryErrorType::InvalidRequest
+        );
+        assert!(!error.is_commit_outcome_unknown());
+        assert!(!error.is_transaction_conflict());
     }
 
     #[test]

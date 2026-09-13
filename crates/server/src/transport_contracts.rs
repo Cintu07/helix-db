@@ -391,6 +391,45 @@ fn vector_input_errors_are_client_failures_but_physical_errors_are_internal() {
     }
 }
 
+#[tokio::test]
+async fn active_text_limits_preserve_the_shared_code_message_and_input_classification() {
+    use db::error::{ActiveTextMutationResource, HelixDbError};
+    for resource in [
+        ActiveTextMutationResource::Entities,
+        ActiveTextMutationResource::AnalysisBytes,
+        ActiveTextMutationResource::InputBytes,
+        ActiveTextMutationResource::OutputOperations,
+        ActiveTextMutationResource::OutputBytes,
+        ActiveTextMutationResource::SplitBytes,
+        ActiveTextMutationResource::RetainedSplitBytes,
+        ActiveTextMutationResource::ManifestPageBytes,
+    ] {
+        let error = || {
+            QueryServiceError::Db(HelixDbError::ActiveTextMutationLimitExceeded {
+                resource,
+                observed: 513,
+                limit: 512,
+            })
+        };
+        let code = helix_ast::error_code::QueryErrorCode::ActiveTextMutationLimitExceeded.as_str();
+        let message = format!("db error: Active text mutation exceeds {resource}: observed 513, limit 512. This is a hard mutation-batch limit; reduce the number or size of mutations.");
+        let response = http::service_error_response(error());
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(!response.headers().contains_key("retry-after"));
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({"error": code, "msg": message})
+        );
+        let status = grpc::status_from_service_error(error());
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(status.metadata().get("helix-error-code").unwrap(), code);
+        assert_eq!(status.message(), message);
+    }
+}
+
 #[test]
 fn query_service_control_errors_preserve_public_classification() {
     let deadline = QueryServiceError::Db(db::error::HelixDbError::QueryDeadlineExceeded);

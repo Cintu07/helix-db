@@ -11,3 +11,6 @@ mod predicate_limits;
 mod runtime_feedback;
 mod search_limits;
 mod terminal_roots;
+
+mod ordered_range;
+mod selective_equality;

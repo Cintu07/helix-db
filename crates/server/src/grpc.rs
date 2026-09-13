@@ -177,7 +177,7 @@ pub(super) fn status_from_service_error(error: QueryServiceError) -> Status {
             QueryServiceError::InvalidRequest(_) | QueryServiceError::Planner(_) => {
                 tonic::Code::InvalidArgument
             }
-            QueryServiceError::Db(error) if error.is_invalid_vector_input() => {
+            QueryServiceError::Db(error) if error.is_invalid_input() => {
                 tonic::Code::InvalidArgument
             }
             QueryServiceError::Db(db::error::HelixDbError::WriterModeRequired { .. }) => {

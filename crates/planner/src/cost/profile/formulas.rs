@@ -94,6 +94,62 @@ impl StorageCostProfile {
         }
     }
 
+    /// Cost a label bitmap followed by graph-row reads and row construction.
+    ///
+    /// Label access uses the shared equality bitmap, then checks each graph
+    /// row before emitting it. Unlike managed equality access, these IDs do
+    /// not bypass graph-row reads. Charge the row read/decode budget even
+    /// when statistics are missing; residual predicates are charged separately.
+    ///
+    /// ```
+    /// use helix_planner::cost::{EstimatedRows, StorageCostProfile};
+    /// let profile = StorageCostProfile::default();
+    /// let cost = profile.label_scan(EstimatedRows::rows(1000));
+    /// assert_eq!(cost.object_reads, 1001);
+    /// assert_eq!(cost.authoritative_graph_reads, 1000);
+    /// assert_eq!(cost.range_nexts, 0);
+    /// ```
+    pub fn label_scan(&self, rows: EstimatedRows) -> CostVector {
+        self.bitmap_equality_lookup(rows)
+            .serial(self.authoritative_verification(rows))
+            .serial(self.secondary_row_materialization(rows))
+    }
+
+    /// Cost an element-ID scan followed by graph-row reads and row construction.
+    /// This is distinct from an index range scan, whose driver may defer graph
+    /// verification until after membership filtering.
+    pub fn element_scan(&self, rows: EstimatedRows) -> CostVector {
+        self.range_scan(rows)
+            .serial(self.authoritative_verification(rows))
+            .serial(self.secondary_row_materialization(rows))
+    }
+
+    /// Estimate traversal independently of the physical index direction.
+    /// This charges every estimated visited entry, never just the output limit.
+    pub fn ordered_range_scan(
+        &self,
+        rows: EstimatedRows,
+        iteration: crate::ir::RangeScanIteration,
+    ) -> CostVector {
+        let mut cost = self.range_scan(rows);
+        if iteration == crate::ir::RangeScanIteration::Reverse {
+            let extra = u128::from(self.reverse_range_per_1000.as_micros())
+                * u128::from(rows.as_rows())
+                / 1_000;
+            cost.latency = cost.latency.saturating_add(LatencyEstimate::micros(
+                extra.min(u128::from(u64::MAX)) as u64,
+            ));
+        }
+        cost
+    }
+
+    /// Cost property sort-key reads followed by the existing comparator sort.
+    /// Property decoding uses the same per-row estimate as authoritative checks.
+    pub fn property_sort(&self, rows: EstimatedRows) -> CostVector {
+        self.authoritative_verification(rows)
+            .serial(self.explicit_sort(rows))
+    }
+
     /// Cost an equality-index lookup over an estimated result count.
     pub fn equality_index_lookup(&self, estimated_rows: EstimatedRows) -> CostVector {
         self.bitmap_equality_lookup(estimated_rows)

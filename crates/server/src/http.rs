@@ -149,9 +149,7 @@ pub(super) fn service_error_response(error: QueryServiceError) -> Response {
         match &error {
             QueryServiceError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
             QueryServiceError::Planner(_) => StatusCode::BAD_REQUEST,
-            QueryServiceError::Db(error) if error.is_invalid_vector_input() => {
-                StatusCode::BAD_REQUEST
-            }
+            QueryServiceError::Db(error) if error.is_invalid_input() => StatusCode::BAD_REQUEST,
             QueryServiceError::Db(db::error::HelixDbError::WriterModeRequired { .. }) => {
                 StatusCode::SERVICE_UNAVAILABLE
             }

@@ -52,7 +52,11 @@ pub(super) mod kernel_agreement {
 
     /// Dimensions covering the main loop and the trailing remainder of every
     /// kernel, including the 32 wide AVX stride.
-    pub const AGREEMENT_DIMENSIONS: [usize; 5] = [17, 33, 64, 384, 1536];
+    ///
+    /// The 16 wide kernels see remainders of 1, 14, 15 and 0, and the 32 wide
+    /// ones see 1, 15, 17, 30 and 0. 17 and 30 also leave the main loop with
+    /// nothing to do on a 32 wide stride, so the remainder path runs alone.
+    pub const AGREEMENT_DIMENSIONS: [usize; 7] = [17, 30, 33, 47, 64, 384, 1536];
 
     /// Assert a kernel matches the scalar reference to within the tolerance.
     ///

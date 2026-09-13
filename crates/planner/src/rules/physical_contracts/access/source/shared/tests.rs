@@ -63,7 +63,10 @@ impl AccessSourceFamily for TestFamily {
                 kind: EqualityIndexKind::NonUnique,
                 semantics: ir::EqualityIndexValueSemantics::Indexed,
             },
-            TestPlan::Range(key) => AccessSourceParts::RangeIndex { key },
+            TestPlan::Range(key) => AccessSourceParts::RangeIndex {
+                key,
+                iteration: crate::ir::RangeScanIteration::Forward,
+            },
             TestPlan::Search(k) => AccessSourceParts::VectorSearch { k },
             TestPlan::Intersect(plans) => AccessSourceParts::Intersect(plans.iter().collect()),
             TestPlan::Union(plans) => AccessSourceParts::Union(plans.iter().collect()),
@@ -224,7 +227,7 @@ fn set_and_filter_contracts_reuse_shared_child_costs() {
 }
 
 #[test]
-fn intersection_contract_inherits_order_only_from_a_direct_range_child() {
+fn intersection_contract_inherits_order_from_the_flattened_range_driver() {
     let key = range_key();
     let stats = context::StatsSnapshot::default().with_node_range_cardinality(key.clone(), 5);
     let storage = cost::StorageCostProfile::default();
@@ -252,8 +255,46 @@ fn intersection_contract_inherits_order_only_from_a_direct_range_child() {
         flat.delivered.ordering,
         properties::DeliveredOrdering::ByKeys(_)
     ));
-    assert_eq!(
-        nested.delivered.ordering,
-        properties::DeliveredOrdering::Unordered
-    );
+    assert_eq!(nested.delivered.ordering, flat.delivered.ordering);
+}
+
+#[test]
+fn selective_equality_intersection_charges_all_memberships_and_materializes_once() {
+    let storage = cost::StorageCostProfile::default();
+    let keys = ["tenant", "type", "deleted"]
+        .map(|property| catalog::ScopedPropertyKey::try_new("Resource", property).unwrap());
+    for rare_rows in [0, 1, 10] {
+        let stats = context::StatsSnapshot::default()
+            .with_node_eq_cardinality(keys[0].clone(), 1000)
+            .with_node_eq_cardinality(keys[1].clone(), 2000)
+            .with_node_eq_cardinality(keys[2].clone(), rare_rows);
+        let children = || {
+            keys.iter()
+                .map(|key| non_unique_equality(key.property.as_ref(), key.clone()))
+                .collect::<Vec<_>>()
+        };
+        let flat =
+            access_contract::<TestFamily>(&TestPlan::Intersect(children()), &storage, &stats);
+        let nested = access_contract::<TestFamily>(
+            &TestPlan::Intersect(vec![TestPlan::Intersect(children()), TestPlan::Empty]),
+            &storage,
+            &stats,
+        );
+        let rows = cost::EstimatedRows::rows(rare_rows);
+        let expected_ids = [1000, 2000, rare_rows]
+            .into_iter()
+            .map(|count| storage.bitmap_equality_lookup(cost::EstimatedRows::rows(count)))
+            .fold(cost::CostVector::ZERO, cost::CostVector::serial)
+            .serial(storage.secondary_set_operation(cost::EstimatedRows::rows(3000 + rare_rows)));
+        assert_eq!(flat.estimated_rows, rows);
+        assert_eq!(flat.secondary_id_cost(), Some(expected_ids));
+        assert_eq!(
+            flat.cost,
+            expected_ids.serial(storage.secondary_row_materialization(rows))
+        );
+        assert_eq!(flat.cost.parallel_width, 1);
+        assert_eq!(flat.cost.object_reads, 3);
+        assert_eq!(nested.estimated_rows, cost::EstimatedRows::ZERO);
+        assert_eq!(nested.cost, expected_ids);
+    }
 }

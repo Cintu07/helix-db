@@ -228,7 +228,7 @@ pub enum HelixDbError {
     MigrationSteppingRequiresDisabledMode,
 
     /// A request-owned Active text mutation exceeded exact serialized admission.
-    #[error("Active text mutation exceeds {resource}: observed {observed}, limit {limit}")]
+    #[error("Active text mutation exceeds {resource}: observed {observed}, limit {limit}. This is a hard mutation-batch limit; reduce the number or size of mutations.")]
     ActiveTextMutationLimitExceeded {
         /// Resource rejected before intent creation or object I/O.
         resource: ActiveTextMutationResource,
@@ -636,6 +636,27 @@ impl HelixDbError {
             || matches!(self, Self::Storage(storage_err) if storage_err.kind() == ErrorKind::Transaction)
     }
 
+    /// Returns true for caller-controlled vector input or active-text admission failures.
+    ///
+    /// Query transports and telemetry share this classification. Storage failures,
+    /// invalid persisted rows, and unknown commit outcomes are deliberately excluded.
+    /// This does not classify arbitrary string-based `Query` errors as caller mistakes.
+    ///
+    /// ```
+    /// use db::error::{ActiveTextMutationResource, HelixDbError};
+    /// let error = HelixDbError::ActiveTextMutationLimitExceeded {
+    ///     resource: ActiveTextMutationResource::Entities,
+    ///     observed: 513,
+    ///     limit: 512,
+    /// };
+    /// assert!(error.is_invalid_input());
+    /// assert!(!error.is_transaction_conflict());
+    /// ```
+    #[must_use]
+    pub fn is_invalid_input(&self) -> bool {
+        self.error_code().is_invalid_database_input()
+    }
+
     /// Returns true when a public vector failed caller-controlled validation.
     ///
     /// Invalid persisted vector rows use [`Self::InvalidVectorItem`] or a
@@ -715,6 +736,20 @@ mod tests {
     }
 
     #[test]
+    fn invalid_input_classification_does_not_hide_internal_or_ambiguous_failures() {
+        for error in [
+            HelixDbError::WriterFencedCommitOutcomeUnknown,
+            HelixDbError::InvariantViolation("corrupt row".to_string()),
+            HelixDbError::Storage(slatedb::Error::invalid("storage failure".to_string())),
+            HelixDbError::InvalidVectorItem(VectorItemDecodeError::HeaderMismatch),
+            HelixDbError::Query("execution failure".to_string()),
+            HelixDbError::IndexBusy { state: "building" },
+        ] {
+            assert!(!error.is_invalid_input());
+        }
+    }
+
+    #[test]
     fn invalid_vector_input_classification_excludes_physical_corruption() {
         let invalid_inputs = [
             HelixDbError::InvalidDimension {
@@ -734,6 +769,7 @@ mod tests {
         assert!(invalid_inputs
             .iter()
             .all(HelixDbError::is_invalid_vector_input));
+        assert!(invalid_inputs.iter().all(HelixDbError::is_invalid_input));
 
         assert!(
             !HelixDbError::InvalidVectorItem(VectorItemDecodeError::HeaderMismatch)
@@ -1117,6 +1153,14 @@ mod tests {
         ];
         for (resource, expected) in resources {
             assert_eq!(resource.to_string(), expected);
+            let error = HelixDbError::ActiveTextMutationLimitExceeded {
+                resource,
+                observed: 513,
+                limit: 512,
+            };
+            assert!(error.is_invalid_input());
+            assert!(!error.is_transaction_conflict());
+            assert_eq!(error.error_code(), Code::ActiveTextMutationLimitExceeded);
         }
 
         let error = HelixDbError::ActiveTextMutationLimitExceeded {
@@ -1126,7 +1170,7 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "Active text mutation exceeds output_bytes: observed 11, limit 10"
+            "Active text mutation exceeds output_bytes: observed 11, limit 10. This is a hard mutation-batch limit; reduce the number or size of mutations."
         );
         assert_eq!(
             error.index_error_code(),

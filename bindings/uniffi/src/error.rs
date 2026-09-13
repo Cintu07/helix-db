@@ -43,15 +43,15 @@ impl From<HelixDbError> for HelixError {
     /// Classifies a detailed database error without exposing Rust-only payload types.
     ///
     /// The original display message is retained for diagnostics. The category
-    /// distinguishes caller-correctable vector configuration/input failures
-    /// from invalid stored vector rows, which indicate an internal invariant
+    /// distinguishes caller-correctable vector configuration/input and active-text
+    /// admission failures from invalid stored vector rows, which indicate an internal invariant
     /// violation rather than malformed foreign-language API usage. Retryable
     /// request-view changes remain transaction failures so foreign callers can
     /// apply the same retry policy as a storage transaction conflict.
     fn from(error: HelixDbError) -> Self {
         let error_code = error.error_code().to_string();
         let msg = error.to_string();
-        if error.is_invalid_vector_input() {
+        if error.is_invalid_input() {
             return Self::InvalidRequest {
                 error: error_code,
                 msg,
@@ -216,14 +216,30 @@ mod tests {
 
     #[test]
     fn active_text_resource_limits_are_invalid_requests() {
-        assert!(matches!(
-            HelixError::from(HelixDbError::ActiveTextMutationLimitExceeded {
-                resource: db::error::ActiveTextMutationResource::OutputOperations,
-                observed: 2,
-                limit: 1,
-            }),
-            HelixError::InvalidRequest { .. }
-        ));
+        use db::error::ActiveTextMutationResource;
+        for resource in [
+            ActiveTextMutationResource::Entities,
+            ActiveTextMutationResource::AnalysisBytes,
+            ActiveTextMutationResource::InputBytes,
+            ActiveTextMutationResource::OutputOperations,
+            ActiveTextMutationResource::OutputBytes,
+            ActiveTextMutationResource::SplitBytes,
+            ActiveTextMutationResource::RetainedSplitBytes,
+            ActiveTextMutationResource::ManifestPageBytes,
+        ] {
+            let db_error = HelixDbError::ActiveTextMutationLimitExceeded {
+                resource,
+                observed: 513,
+                limit: 512,
+            };
+            let expected_message = db_error.to_string();
+            let HelixError::InvalidRequest { error, msg } = HelixError::from(db_error) else {
+                panic!("a text admission failure is caller-correctable");
+            };
+            assert_eq!(error, "active_text_mutation_limit_exceeded");
+            assert_eq!(msg, expected_message);
+            assert!(msg.contains("hard mutation-batch limit"));
+        }
     }
 
     #[test]

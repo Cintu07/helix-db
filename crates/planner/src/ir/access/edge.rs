@@ -56,6 +56,9 @@ pub enum EdgeAccessPlan {
         key: catalog::ScopedPropertyDirectionKey,
         /// Range bounds.
         range: ir::IndexRange,
+        /// Traversal within the physical lane.
+        #[serde(default)]
+        iteration: ir::RangeScanIteration,
     },
     /// Vector search.
     VectorSearch {
@@ -171,6 +174,7 @@ mod tests {
     #[test]
     fn secondary_set_eligibility_covers_nested_and_mixed_edge_trees() {
         let range = EdgeAccessPlan::RangeIndex {
+            iteration: crate::ir::RangeScanIteration::Forward,
             index: catalog::EdgeRangeIndexMeta::try_new("likes_weight").unwrap(),
             key: catalog::ScopedPropertyDirectionKey::try_new(
                 "LIKES",
@@ -213,6 +217,7 @@ mod tests {
                 ),
             },
             EdgeAccessPlan::RangeIndex {
+                iteration: crate::ir::RangeScanIteration::Forward,
                 index: catalog::EdgeRangeIndexMeta::try_new("likes_created").unwrap(),
                 key: catalog::ScopedPropertyDirectionKey::try_new(
                     "LIKES",
@@ -262,6 +267,7 @@ mod tests {
                 label: likes.clone(),
             }),
             source(EdgeAccessPlan::RangeIndex {
+                iteration: crate::ir::RangeScanIteration::Forward,
                 index: catalog::EdgeRangeIndexMeta::try_new("likes_created").unwrap(),
                 key: catalog::ScopedPropertyDirectionKey::try_new(
                     "LIKES",
